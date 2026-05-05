@@ -6,7 +6,7 @@ import json
 import datetime
 import base64
 from io import BytesIO
-import requests  # 구글 시트로 데이터를 보내기 위한 모듈 추가
+import requests
 
 # 사이드바 닫기 및 넓은 화면
 st.set_page_config(page_title="KCC Homecc 실측지 시스템", layout="wide", initial_sidebar_state="collapsed")
@@ -17,7 +17,7 @@ if 'logged_in' not in st.session_state:
 if 'user_name' not in st.session_state:
     st.session_state.user_name = ""
 
-# 로그인이 안 되어 있으면 로그인 화면만 보여주고 멈춤(stop)
+# 로그인이 안 되어 있으면 로그인 화면만 보여주고 멈춤(그만)
 if not st.session_state.logged_in:
     st.markdown("<br><br><h1 style='text-align: center; color: #004b9b;'>KCC Homecc 스마트 실측 시스템</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #666;'>직원 확인을 위해 이름(또는 사번)을 입력해 주세요.</p>", unsafe_allow_html=True)
@@ -76,7 +76,7 @@ st.markdown(f"""
             </text>
         </svg>
         <div style="font-size: 14px; color: #888; border-left: 2px solid #ddd; padding-left: 15px; font-weight: bold; align-self: flex-end; padding-bottom: 6px;">
-            Smart Measurement System v5.7 (Team Edition)
+            Smart Measurement System v6.1 (Team Edition)
         </div>
     </div>
     <div style="font-size: 15px; font-weight: bold; color: #004b9b; background: #e8f0fe; padding: 8px 15px; border-radius: 20px;">
@@ -263,8 +263,17 @@ with tab1:
             for g_idx, (gid, win_list) in enumerate(groups_list):
                 win_list.sort(key=lambda x: x['num']) 
                 group_html = "<div style='display: flex; flex-wrap: wrap; align-items: flex-start; border: 1px solid #ccc; padding: 10px; background: white; margin-bottom: 5px; border-radius:8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; max-width: 100%; overflow-x: auto;'>"
-                weights = [] 
                 
+                columns = []
+                for w in win_list:
+                    v_join = w.get('join_dir', '옆으로 결합(좌우)')
+                    if v_join == '위로 결합(상)' and columns:
+                        columns[-1].insert(0, w)
+                    elif v_join == '아래로 결합(하)' and columns:
+                        columns[-1].append(w)
+                    else:
+                        columns.append([w])
+
                 def get_cbs_html(cb_list, dh):
                     html = ""
                     total_w_real = 0
@@ -290,7 +299,6 @@ with tab1:
                         font_sz = "8" if w_px <= 10 else "10"
                         
                         svg_cb = f"<svg width='{w_px}' height='{dh + 20}' xmlns='http://www.w3.org/2000/svg' style='margin-right:1px; display:block;'>"
-                        
                         svg_cb += f"<rect width='{w_px}' height='{dh}' fill='white' />"
                         
                         lines_svg = ""
@@ -300,7 +308,6 @@ with tab1:
                         
                         svg_cb += f"<rect x='0' y='{dh}' width='{w_px}' height='20' fill='white' />"
                         svg_cb += f"<rect width='{w_px}' height='{dh}' fill='none' stroke='black' stroke-width='1'/>"
-                        
                         svg_cb += f"<text x='{w_px/2}' y='{dh/2}' dy='.3em' transform='rotate(-90 {w_px/2} {dh/2})' font-size='{font_sz}' font-weight='900' fill='white' stroke='white' stroke-width='2' text-anchor='middle'>{cb_label}</text>"
                         svg_cb += f"<text x='{w_px/2}' y='{dh/2}' dy='.3em' transform='rotate(-90 {w_px/2} {dh/2})' font-size='{font_sz}' font-weight='900' fill='black' text-anchor='middle'>{cb_label}</text>"
                         
@@ -314,123 +321,157 @@ with tab1:
                         return f"<div style='display:flex; flex-direction:column; align-items:center;'><div style='font-size:11px; font-weight:bold; color:#e60012; height:15px; display:flex; align-items:flex-end; padding-bottom:3px; box-sizing:border-box;'>{total_w_real}</div><div style='display:flex;'>{html}</div></div>", total_w_real
                     return "", 0
 
-                for window in win_list:
-                    draw_h = int(window['h'] * PIXEL_SCALE)
-                    draw_w = int(window['w'] * PIXEL_SCALE)
-                    
-                    cb_l_html, _ = get_cbs_html(window.get('cb_left', []), draw_h)
-                    cb_r_html, _ = get_cbs_html(window.get('cb_right', []), draw_h)
-                    weights.append(1) 
-                    
-                    group_html += f"<div style='display:flex; flex-direction:column; align-items:center; margin: 0 5px; min-width: max-content;'>"
-                    c_num = get_circled_num(window['num'])
-                    group_html += f"<div style='text-align:center; margin-bottom: 5px; min-height:40px;'><div style='font-size: 15px; font-weight:bold; white-space:nowrap; color:#333;'>{c_num}{window.get('loc', '')}({window['shape']})</div><div style='font-size: 13px; color:#777; white-space:nowrap;'>{window['type']}</div></div>"
-
-                    group_html += f"<div style='display:flex; align-items:flex-start;'>"
-                    if window.get('cb_left', []): group_html += cb_l_html
-                    
-                    gls = window.get('glass', '기본(투명)')
-                    
-                    moru_lines = ""
-                    if gls == "모루":
-                        bg_fill = "#f2f7fa"
-                        for i in range(4, int(draw_w), 8):
-                            moru_lines += f"<rect x='{i}' y='0' width='4' height='{draw_h}' fill='#d6e4f0' />"
-                    elif gls == "미스트":
-                        bg_fill = "#FFE0B2"
-                    else:
-                        bg_fill = "#fafafa"
-
-                    svg_str = f"<div style='display:flex; flex-direction:column; align-items:center;'><div style='height:15px;'></div>" 
-                    svg_str += f"<div style='position:relative; width:{draw_w}px; height:{draw_h}px;'>"
-                    
-                    svg_str += f"<svg width='{draw_w}' height='{draw_h}' xmlns='http://www.w3.org/2000/svg' style='display:block;'>"
-                    svg_str += f"<rect width='{draw_w}' height='{draw_h}' fill='{bg_fill}' stroke='black' stroke-width='2'/>"
-                    svg_str += moru_lines
-                    
-                    vs_px = int(window.get('v_size', 0) * PIXEL_SCALE) if window.get('v_size', 0) > 0 else 0
-
-                    if "문/" in window['shape']:
-                        svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{window['shape'].split('/')[0]}</text>"
-                        svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
-                        if gls != "기본(투명)":
-                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 25}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>"
-                        
-                        handle_w, handle_h = 4, 16
-                        if "우핸들" in window['shape']:
-                            hx, hy = draw_w - 5 - handle_w, draw_h / 2 - handle_h / 2
-                            svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
-                        elif "좌핸들" in window['shape']:
-                            hx, hy = 5, draw_h / 2 - handle_h / 2
-                            svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
-                    else:
-                        ratio_txt = ""
-                        gls_txt = f"<text x='{draw_w/2}' y='{draw_h/2 + 20}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>" if gls != "기본(투명)" else ""
-
-                        if "2W" in window['shape']:
-                            if "(1:2)" in window['shape']: ratio_txt = "1:2"
-                            vd = window.get('vent_dir', '좌')
-                            x = vs_px if "U" in window['shape'] and vd == '좌' else (draw_w - vs_px if "U" in window['shape'] and vd == '우' else (draw_w/3 if "(1:2)" in window['shape'] and vd == '좌' else (draw_w*2/3 if "(1:2)" in window['shape'] and vd == '우' else draw_w/2)))
-                            svg_str += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
-                        elif "3W" in window['shape']:
-                            if "1:2:1" in window['shape']: ratio_txt = "1:2:1"
-                            x1, x2 = (vs_px, draw_w - vs_px) if "U" in window['shape'] and vs_px > 0 else (draw_w/4, draw_w*3/4)
-                            svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
-                        elif "4W" in window['shape']:
-                            x1, x2, x3 = draw_w/4, draw_w/2, draw_w*3/4
-                            svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x3}' y1='0' x2='{x3}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
-                        elif "FIX" in window['shape']:
-                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>{gls_txt}"
-
-                    raw_type = window.get('type', '')
-                    prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
-                    if prod_name and prod_name != "선택":
-                        svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='white' stroke='white' stroke-width='4' stroke-linejoin='round' text-anchor='middle'>{prod_name}</text>"
-                        svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='#000' text-anchor='middle'>{prod_name}</text>"
-                        
-                    svg_str += "</svg>" 
-
-                    if window['shape'] != "FIX" and "문/" not in window['shape']:
-                        v_size_val = window.get('v_size', 0)
-                        v_size_html = f"<div style='color:#e60012; font-size:12px; font-weight:bold; margin-top:2px;'>{v_size_val}</div>" if v_size_val > 0 and "U" in window['shape'] else ""
-                        
-                        def get_overlay_html(dir_val, pos_x, w_shape):
-                            scr = window.get('screen', 'Y')
-                            arr = "←" if dir_val == '우' else "→"
-                            
-                            scr_html = ""
-                            if scr == 'Y':
-                                scr_html = "<div style='display:flex; align-items:center; justify-content:center; gap:3px; margin-bottom:1px;'><span style='font-size:18px; font-weight:bold; color:#e60012;'>#</span><span style='font-size:12px; font-weight:bold; color:#e60012;'>(망)</span></div>"
-                                
-                            if "3W" in w_shape or "4W" in w_shape:
-                                dir_html = f"<span style='font-size:18px; font-weight:bold; color:#e60012;'>{arr}</span>"
-                            else:
-                                dir_html = f"<span style='font-size:18px;'>{arr}</span> <span style='font-size:14px; font-weight:bold;'>{dir_val}</span>" if dir_val == '우' else f"<span style='font-size:14px; font-weight:bold;'>{dir_val}</span> <span style='font-size:18px;'>{arr}</span>"
-                                
-                            return f"<div style='position:absolute; left:{pos_x}px; top:50%; transform:translate(-50%, -50%); text-align:center; line-height:1.2; z-index:5;'>{scr_html}<div style='display:flex; align-items:center; justify-content:center; gap:2px; color:#e60012;'>{dir_html}</div>{v_size_html}</div>"
-
-                        vd = window.get('vent_dir', '좌')
-                        if "3W" in window['shape']:
-                            svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
-                            svg_str += get_overlay_html('우', x2 + (draw_w - x2) / 2, window['shape'])
-                        elif "4W" in window['shape']:
-                            svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
-                            svg_str += get_overlay_html('우', x3 + (draw_w - x3) / 2, window['shape'])
-                        elif "2W" in window['shape']:
-                            svg_str += get_overlay_html(vd, x/2 if vd == '좌' else x + (draw_w-x)/2, window['shape'])
-
-                        if ratio_txt: svg_str += f"<div style='position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:14px; color:#555; font-weight:bold; z-index:1;'>{ratio_txt}</div>"
-                        h_pos_val = window.get('h_pos', 0)
-                        if h_pos_val > 0: svg_str += f"<div style='position:absolute; left:3px; bottom:15px; border-left:2px solid #e60012; border-bottom:2px solid #e60012; padding:2px; color:#e60012; font-size:11px; font-weight:bold; line-height:1;'>핸들{h_pos_val}</div>"
-                    
-                    svg_str += f"</div></div>" 
-                    
-                    group_html += svg_str
-                    if window.get('cb_right', []): group_html += cb_r_html
-                    
-                    group_html += f"</div><div style='font-size: 15px; font-weight: 900; letter-spacing: 0.5px; margin-top: 6px; color:#000;'>{window['w']} * {window['h']}(H)</div></div>" 
+                group_html += "<div style='display:flex; align-items:flex-start;'>"
                 
-                group_html += "</div>"
+                for col in columns:
+                    group_html += "<div style='display:flex; flex-direction:column; align-items:center; margin: 0 5px;'>"
+                    
+                    for window in col:
+                        draw_h = int(window['h'] * PIXEL_SCALE)
+                        draw_w = int(window['w'] * PIXEL_SCALE)
+                        
+                        cb_l_html, _ = get_cbs_html(window.get('cb_left', []), draw_h)
+                        cb_r_html, _ = get_cbs_html(window.get('cb_right', []), draw_h)
+                        
+                        group_html += f"<div style='display:flex; flex-direction:column; align-items:center; min-width: max-content; margin-bottom: 8px;'>"
+                        c_num = get_circled_num(window['num'])
+                        group_html += f"<div style='text-align:center; margin-bottom: 2px; min-height:35px;'><div style='font-size: 15px; font-weight:bold; white-space:nowrap; color:#333;'>{c_num}{window.get('loc', '')}({window['shape']})</div><div style='font-size: 13px; color:#777; white-space:nowrap;'>{window['type']}</div></div>"
+
+                        group_html += f"<div style='display:flex; align-items:flex-start;'>"
+                        if window.get('cb_left', []): group_html += cb_l_html
+                        
+                        gls = window.get('glass', '기본(투명)')
+                        
+                        extra_svg_elements = ""
+                        if gls == "모루":
+                            # ✨ 모루: 미스트와 차별화되는 모던한 라이트 그레이 톤 
+                            bg_fill = "#f4f6f8" 
+                            for i in range(4, int(draw_w), 8):
+                                extra_svg_elements += f"<rect x='{i}' y='0' width='4' height='{draw_h}' fill='#dfe3e8' />"
+                        elif gls == "미스트":
+                            # ✨ 미스트: 캡처 버그 우회를 위해 명시적 Line 사용 & 시원한 쿨 블루 톤 적용
+                            bg_fill = "#e6f2ff" 
+                            for x in range(0, int(draw_w), 4):
+                                extra_svg_elements += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='#cce5ff' stroke-width='1'/>"
+                            for y in range(0, int(draw_h), 4):
+                                extra_svg_elements += f"<line x1='0' y1='{y}' x2='{draw_w}' y2='{y}' stroke='#cce5ff' stroke-width='1'/>"
+                        else:
+                            bg_fill = "#fafafa"
+
+                        svg_str = f"<div style='display:flex; flex-direction:column; align-items:center;'><div style='height:15px;'></div>" 
+                        svg_str += f"<div style='position:relative; width:{draw_w}px; height:{draw_h}px;'>"
+                        
+                        svg_str += f"<svg width='{draw_w}' height='{draw_h}' xmlns='http://www.w3.org/2000/svg' style='display:block;'>"
+                        svg_str += f"<rect width='{draw_w}' height='{draw_h}' fill='{bg_fill}' stroke='black' stroke-width='2'/>"
+                        svg_str += extra_svg_elements
+                        
+                        vs_px = int(window.get('v_size', 0) * PIXEL_SCALE) if window.get('v_size', 0) > 0 else 0
+
+                        if "문/" in window['shape']:
+                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{window['shape'].split('/')[0]}</text>"
+                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
+                            if gls != "기본(투명)":
+                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 25}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>"
+                            
+                            handle_w, handle_h = 4, 16
+                            if "우핸들" in window['shape']:
+                                hx, hy = draw_w - 5 - handle_w, draw_h / 2 - handle_h / 2
+                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
+                            elif "좌핸들" in window['shape']:
+                                hx, hy = 5, draw_h / 2 - handle_h / 2
+                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
+                        else:
+                            ratio_txt = ""
+                            gls_txt = f"<text x='{draw_w/2}' y='{draw_h/2 + 20}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>" if gls != "기본(투명)" else ""
+
+                            if "2W" in window['shape']:
+                                if "(1:2)" in window['shape']: ratio_txt = "1:2"
+                                vd = window.get('vent_dir', '좌')
+                                x = vs_px if "U" in window['shape'] and vd == '좌' else (draw_w - vs_px if "U" in window['shape'] and vd == '우' else (draw_w/3 if "(1:2)" in window['shape'] and vd == '좌' else (draw_w*2/3 if "(1:2)" in window['shape'] and vd == '우' else draw_w/2)))
+                                svg_str += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
+                            elif "3W" in window['shape']:
+                                if "1:2:1" in window['shape']: ratio_txt = "1:2:1"
+                                x1, x2 = (vs_px, draw_w - vs_px) if "U" in window['shape'] and vs_px > 0 else (draw_w/4, draw_w*3/4)
+                                svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
+                            elif "4W" in window['shape']:
+                                x1, x2, x3 = draw_w/4, draw_w/2, draw_w*3/4
+                                svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x3}' y1='0' x2='{x3}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
+                            elif "FIX" in window['shape'] or window['shape'] in ["2F", "3F", "4F"]:
+                                if window['shape'] == "2F":
+                                    svg_str += f"<line x1='{draw_w/2}' y1='0' x2='{draw_w/2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<text x='{draw_w/4}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w*3/4}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                elif window['shape'] == "3F":
+                                    x1, x2 = draw_w/3, draw_w*2/3
+                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<text x='{draw_w/6}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w*5/6}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                elif window['shape'] == "4F":
+                                    x1, x2, x3 = draw_w/4, draw_w/2, draw_w*3/4
+                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<line x1='{x3}' y1='0' x2='{x3}' y2='{draw_h}' stroke='black' stroke-width='2' />"
+                                    svg_str += f"<text x='{draw_w/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w*3/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w*5/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<text x='{draw_w*7/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                else:
+                                    svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                svg_str += gls_txt
+
+                        raw_type = window.get('type', '')
+                        prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
+                        if prod_name and prod_name != "선택":
+                            svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='white' stroke='white' stroke-width='4' stroke-linejoin='round' text-anchor='middle'>{prod_name}</text>"
+                            svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='#000' text-anchor='middle'>{prod_name}</text>"
+                            
+                        svg_str += "</svg>" 
+
+                        if window['shape'] not in ["FIX", "2F", "3F", "4F"] and "문/" not in window['shape']:
+                            v_size_val = window.get('v_size', 0)
+                            v_size_html = f"<div style='color:#e60012; font-size:12px; font-weight:bold; margin-top:2px;'>{v_size_val}</div>" if v_size_val > 0 and "U" in window['shape'] else ""
+                            
+                            def get_overlay_html(dir_val, pos_x, w_shape):
+                                scr = window.get('screen', 'Y')
+                                arr = "←" if dir_val == '우' else "→"
+                                
+                                scr_html = ""
+                                if scr == 'Y':
+                                    scr_html = "<div style='display:flex; align-items:center; justify-content:center; gap:3px; margin-bottom:1px;'><span style='font-size:18px; font-weight:bold; color:#e60012;'>#</span><span style='font-size:12px; font-weight:bold; color:#e60012;'>(망)</span></div>"
+                                    
+                                if "3W" in w_shape or "4W" in w_shape:
+                                    dir_html = f"<span style='font-size:18px; font-weight:bold; color:#e60012;'>{arr}</span>"
+                                else:
+                                    dir_html = f"<span style='font-size:18px;'>{arr}</span> <span style='font-size:14px; font-weight:bold;'>{dir_val}</span>" if dir_val == '우' else f"<span style='font-size:14px; font-weight:bold;'>{dir_val}</span> <span style='font-size:18px;'>{arr}</span>"
+                                    
+                                return f"<div style='position:absolute; left:{pos_x}px; top:50%; transform:translate(-50%, -50%); text-align:center; line-height:1.2; z-index:5;'>{scr_html}<div style='display:flex; align-items:center; justify-content:center; gap:2px; color:#e60012;'>{dir_html}</div>{v_size_html}</div>"
+
+                            vd = window.get('vent_dir', '좌')
+                            if "3W" in window['shape']:
+                                svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
+                                svg_str += get_overlay_html('우', x2 + (draw_w - x2) / 2, window['shape'])
+                            elif "4W" in window['shape']:
+                                svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
+                                svg_str += get_overlay_html('우', x3 + (draw_w - x3) / 2, window['shape'])
+                            elif "2W" in window['shape']:
+                                svg_str += get_overlay_html(vd, x/2 if vd == '좌' else x + (draw_w-x)/2, window['shape'])
+
+                            if ratio_txt: svg_str += f"<div style='position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:14px; color:#555; font-weight:bold; z-index:1;'>{ratio_txt}</div>"
+                            h_pos_val = window.get('h_pos', 0)
+                            if h_pos_val > 0: svg_str += f"<div style='position:absolute; left:3px; bottom:15px; border-left:2px solid #e60012; border-bottom:2px solid #e60012; padding:2px; color:#e60012; font-size:11px; font-weight:bold; line-height:1;'>핸들{h_pos_val}</div>"
+                        
+                        svg_str += f"</div></div>" 
+                        
+                        group_html += svg_str
+                        if window.get('cb_right', []): group_html += cb_r_html
+                        
+                        group_html += f"</div><div style='font-size: 15px; font-weight: 900; letter-spacing: 0.5px; margin-top: 4px; color:#000;'>{window['w']} * {window['h']}(H)</div></div>" 
+                    
+                    group_html += "</div>"
+                
+                group_html += "</div></div>"
                 all_svg_html_blocks.append(group_html)
                 
                 with render_cols[g_idx % 2]:
@@ -466,7 +507,15 @@ with tab1:
                 current_w = next((w for w in st.session_state.windows_data if w['num'] == target_n), None)
                 prev_w = next((w for w in st.session_state.windows_data if w['num'] == target_n - 1), None)
                 if current_w and prev_w and current_w.get('group_id') == prev_w.get('group_id'): default_combine = True
+            
             combine_prev = st.checkbox("🔗 이전 창과 연속 결합 (그룹화)", value=default_combine)
+            
+            join_dir_options = ["옆으로 결합(좌우)", "위로 결합(상)", "아래로 결합(하)"]
+            join_dir = join_dir_options[0]
+            if combine_prev and target_n > 1:
+                existing_join = get_val('join_dir', '옆으로 결합(좌우)')
+                if existing_join not in join_dir_options: existing_join = join_dir_options[0]
+                join_dir = st.radio("결합 방향", join_dir_options, index=join_dir_options.index(existing_join), horizontal=True)
 
             loc_name = st.text_input("설치 위치 (명칭)", value=get_val('loc', ''))
             
@@ -480,7 +529,7 @@ with tab1:
             elif cat == "터닝도어": type_options += ["터닝도어"]
             win_type = c_c2.selectbox("창호 종류", type_options, index=type_options.index(get_val('type', '선택')) if get_val('type', '선택') in type_options else 0)
 
-            shape_options = ["FIX"] if cat == "고정창" else (["선택", "미는문/우핸들", "미는문/좌핸들", "당기는문/우핸들", "당기는문/좌핸들"] if cat == "터닝도어" else ["선택", "2W", "2W(1:2)", "2WU", "3W(1:2:1)", "3WU", "4W"])
+            shape_options = ["FIX", "2F", "3F", "4F"] if cat == "고정창" else (["선택", "미는문/우핸들", "미는문/좌핸들", "당기는문/우핸들", "당기는문/좌핸들"] if cat == "터닝도어" else ["선택", "2W", "2W(1:2)", "2WU", "3W(1:2:1)", "3WU", "4W"])
             win_shape = st.selectbox("창 형태", shape_options, index=shape_options.index(get_val('shape', '선택')) if get_val('shape', '선택') in shape_options else 0)
 
             cv1, cv2 = st.columns(2)
@@ -533,7 +582,7 @@ with tab1:
                     gid = get_val('group_id', st.session_state.group_counter)
                     if combine_prev and target_n > 1: gid = next((w['group_id'] for w in st.session_state.windows_data if w['num'] == target_n - 1), gid)
                     
-                    new_data = {"num": target_n, "group_id": gid, "loc": loc_name, "cat": cat, "type": win_type, "shape": win_shape, "w": width, "h": height, "v_size": v_size, "h_pos": h_pos, "vent_dir": vent_dir, "screen": screen_opt, "glass": glass_opt, "cb_left": cb_left_list, "cb_right": cb_right_list}
+                    new_data = {"num": target_n, "group_id": gid, "join_dir": join_dir, "loc": loc_name, "cat": cat, "type": win_type, "shape": win_shape, "w": width, "h": height, "v_size": v_size, "h_pos": h_pos, "vent_dir": vent_dir, "screen": screen_opt, "glass": glass_opt, "cb_left": cb_left_list, "cb_right": cb_right_list}
                     if st.session_state.edit_target: st.session_state.windows_data = [new_data if w['num'] == target_n else w for w in st.session_state.windows_data]; st.session_state.edit_target = None
                     else: 
                         st.session_state.windows_data.append(new_data)
@@ -545,8 +594,6 @@ with tab1:
 # TAB 2: 최종 실측지 템플릿 및 인쇄/캡처 출력
 # ==========================================
 with tab2:
-    
-    # 버튼 배치를 위한 4개 컬럼 (전송 버튼 추가)
     col_print, col_capture, col_log, col_zoom = st.columns([1, 1.2, 1.2, 3])
     
     with col_print:
@@ -593,10 +640,8 @@ with tab2:
         """, height=65)
 
     with col_log:
-        # ✨ 구글 시트로 데이터 전송 버튼 ✨
         if st.button("📤 작업 완료 (시트 기록)", type="secondary", use_container_width=True):
             try:
-                # 🚨 여기에 복사해 둔 구글 웹 앱 URL을 붙여넣으세요! 🚨
                 WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzPCOq6oxDMtkmbNQQKvjeuSU5TlUKHC9XHg6jT59RnXBoH7paF7o2ZmeH851UMZ6Ag/exec" 
                 
                 if WEBHOOK_URL:
