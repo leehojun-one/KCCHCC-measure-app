@@ -1,12 +1,13 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageOps, ImageDraw
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
 import json
 import datetime
 import base64
 from io import BytesIO
 import requests
+import urllib.parse
 
 # 사이드바 닫기 및 넓은 화면
 st.set_page_config(page_title="KCC Homecc 실측지 시스템", layout="wide", initial_sidebar_state="collapsed")
@@ -35,7 +36,7 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in = True
                     st.session_state.user_name = emp_name
                     st.rerun()
-    st.stop() # 로그인 전에는 아래 코드(도면 설계)가 실행되지 않도록 차단
+    st.stop()
 
 # ✨ 프린트 & 페이지 분할 제어 CSS ✨
 st.markdown("""
@@ -56,12 +57,11 @@ st.markdown("""
     }
     @page { size: A3 landscape; margin: 5mm; }
 }
-/* 우측 폼 침범을 막기 위한 내부 렌더링 컨테이너 설정 */
 div[data-testid="stMarkdownContainer"] { max-width: 100%; overflow-x: visible; }
 </style>
 """, unsafe_allow_html=True)
 
-# KCC Homecc 공식 로고 (로그인한 사용자 이름 표시 추가)
+# KCC Homecc 공식 로고
 st.markdown(f"""
 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 25px; padding-bottom: 10px; border-bottom: 2px solid #eee;">
     <div style="display: flex; align-items: center; gap: 15px;">
@@ -76,7 +76,7 @@ st.markdown(f"""
             </text>
         </svg>
         <div style="font-size: 14px; color: #888; border-left: 2px solid #ddd; padding-left: 15px; font-weight: bold; align-self: flex-end; padding-bottom: 6px;">
-            Smart Measurement System v6.1 (Team Edition)
+            Smart Measurement System v6.4 (Team Edition)
         </div>
     </div>
     <div style="font-size: 15px; font-weight: bold; color: #004b9b; background: #e8f0fe; padding: 8px 15px; border-radius: 20px;">
@@ -162,7 +162,9 @@ def renumber_and_redraw():
             mx, my = marker['x'], marker['y']
             draw.ellipse((mx-15, my-15, mx+15, my+15), fill='#e60012', outline='darkred')
             txt = str(marker['num'])
-            for ox, oy in [(-4,-6), (-3,-6), (-4,-5), (-3,-5)]: draw.text((mx+ox, my+oy), txt, fill='white')
+            for ox in [-1, 0, 1]:
+                for oy in [-1, 0, 1]:
+                    draw.text((mx-4+ox, my-6+oy), txt, fill='white')
         st.session_state.floor_plan_marked = img_draw
 
 def delete_window(target_num):
@@ -208,7 +210,7 @@ with tab1:
 
     st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1.6, 3.1, 1.3])
+    col1, col2, col3 = st.columns([1.5, 3.5, 1.3])
 
     with col1:
         st.subheader("2. 도면 마킹")
@@ -257,12 +259,13 @@ with tab1:
             groups_dict = {}
             for w in st.session_state.windows_data: groups_dict.setdefault(w.get('group_id', w['num']), []).append(w)
             
-            render_cols = st.columns(2)
             groups_list = sorted(groups_dict.items(), key=lambda x: min(w['num'] for w in x[1]))
+            
+            g_cols = st.columns(2)
             
             for g_idx, (gid, win_list) in enumerate(groups_list):
                 win_list.sort(key=lambda x: x['num']) 
-                group_html = "<div style='display: flex; flex-wrap: wrap; align-items: flex-start; border: 1px solid #ccc; padding: 10px; background: white; margin-bottom: 5px; border-radius:8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; max-width: 100%; overflow-x: auto;'>"
+                group_html = "<div style='display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; border: 1px solid #ccc; padding: 10px; background: white; margin-bottom: 5px; border-radius:8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); page-break-inside: avoid; max-width: 100%; overflow-x: auto; width: fit-content; margin-left: auto; margin-right: auto;'>"
                 
                 columns = []
                 for w in win_list:
@@ -341,15 +344,14 @@ with tab1:
                         if window.get('cb_left', []): group_html += cb_l_html
                         
                         gls = window.get('glass', '기본(투명)')
+                        cat_val = window.get('cat', '')
                         
                         extra_svg_elements = ""
                         if gls == "모루":
-                            # ✨ 모루: 미스트와 차별화되는 모던한 라이트 그레이 톤 
                             bg_fill = "#f4f6f8" 
                             for i in range(4, int(draw_w), 8):
                                 extra_svg_elements += f"<rect x='{i}' y='0' width='4' height='{draw_h}' fill='#dfe3e8' />"
                         elif gls == "미스트":
-                            # ✨ 미스트: 캡처 버그 우회를 위해 명시적 Line 사용 & 시원한 쿨 블루 톤 적용
                             bg_fill = "#e6f2ff" 
                             for x in range(0, int(draw_w), 4):
                                 extra_svg_elements += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='#cce5ff' stroke-width='1'/>"
@@ -366,22 +368,44 @@ with tab1:
                         svg_str += extra_svg_elements
                         
                         vs_px = int(window.get('v_size', 0) * PIXEL_SCALE) if window.get('v_size', 0) > 0 else 0
+                        
+                        # [오류 해결] 에러 방지를 위해 변수 빈 값으로 사전 초기화
+                        ratio_txt = ""
 
-                        if "문/" in window['shape']:
-                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{window['shape'].split('/')[0]}</text>"
-                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
+                        if "문/" in window['shape'] or cat_val == "터닝도어":
+                            if cat_val == "터닝도어":
+                                # 외틀 (프레임) - 심플하게
+                                svg_str += f"<rect x='2' y='2' width='{draw_w-4}' height='{draw_h-4}' fill='none' stroke='black' stroke-width='2'/>"
+                                # 짝 (도어)
+                                svg_str += f"<rect x='8' y='8' width='{draw_w-16}' height='{draw_h-16}' fill='none' stroke='black' stroke-width='1'/>"
+                                
+                                # 터닝도어 방향 보조선 (핸들 반대쪽인 경첩으로 모이도록)
+                                if "우핸들" in window['shape']:
+                                    svg_str += f"<line x1='{draw_w-8}' y1='8' x2='8' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
+                                    svg_str += f"<line x1='{draw_w-8}' y1='{draw_h-8}' x2='8' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
+                                elif "좌핸들" in window['shape']:
+                                    svg_str += f"<line x1='8' y1='8' x2='{draw_w-8}' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
+                                    svg_str += f"<line x1='8' y1='{draw_h-8}' x2='{draw_w-8}' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
+
+                            shape_text = window['shape'].split('/')[0] if '/' in window['shape'] else window['shape']
+                            if shape_text != "선택":
+                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{shape_text}</text>"
+                            if '/' in window['shape']:
+                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
                             if gls != "기본(투명)":
                                 svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 25}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>"
                             
-                            handle_w, handle_h = 4, 16
+                            handle_w, handle_h = 6, 20
                             if "우핸들" in window['shape']:
-                                hx, hy = draw_w - 5 - handle_w, draw_h / 2 - handle_h / 2
-                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
+                                hx = draw_w - 14 if cat_val == "터닝도어" else draw_w - 5 - handle_w
+                                hy = draw_h / 2 - handle_h / 2
+                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
                             elif "좌핸들" in window['shape']:
-                                hx, hy = 5, draw_h / 2 - handle_h / 2
-                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#aaa' stroke='black' rx='2'/>"
+                                hx = 8 if cat_val == "터닝도어" else 5
+                                hy = draw_h / 2 - handle_h / 2
+                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
+                                
                         else:
-                            ratio_txt = ""
                             gls_txt = f"<text x='{draw_w/2}' y='{draw_h/2 + 20}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>" if gls != "기본(투명)" else ""
 
                             if "2W" in window['shape']:
@@ -419,17 +443,38 @@ with tab1:
                                     svg_str += f"<text x='{draw_w*7/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
                                 else:
                                     svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                svg_str += gls_txt
+                            elif cat_val == "PJ창":
+                                svg_str += f"<line x1='0' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/>"
+                                svg_str += f"<line x1='{draw_w}' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/>"
+                            svg_str += gls_txt
 
                         raw_type = window.get('type', '')
-                        prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
-                        if prod_name and prod_name != "선택":
+                        shape_val = window.get('shape', '')
+                        
+                        sub_prod_name = ""
+                        if cat_val == "공틀":
+                            prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
+                            sub_prod_name = shape_val
+                        elif cat_val == "PJ창":
+                            prod_name = "PJ"
+                        elif cat_val == "터닝도어":
+                            prod_name = "TD"
+                        else:
+                            prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
+                        
+                        shape_text = window['shape'].split('/')[0] if '/' in window['shape'] else window['shape']
+                        if shape_text != "선택" and cat_val != "공틀" and "문/" not in window['shape'] and cat_val != "터닝도어":
+                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{shape_text}</text>"
+                        
+                        if prod_name and prod_name != "선택" and prod_name != "선택 선택":
                             svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='white' stroke='white' stroke-width='4' stroke-linejoin='round' text-anchor='middle'>{prod_name}</text>"
                             svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='#000' text-anchor='middle'>{prod_name}</text>"
+                            if sub_prod_name:
+                                svg_str += f"<text x='{draw_w/2}' y='39' font-size='13' font-weight='bold' fill='#e60012' text-anchor='middle'>{sub_prod_name}</text>"
                             
                         svg_str += "</svg>" 
 
-                        if window['shape'] not in ["FIX", "2F", "3F", "4F"] and "문/" not in window['shape']:
+                        if window['shape'] not in ["FIX", "2F", "3F", "4F"] and "문/" not in window['shape'] and cat_val != "터닝도어":
                             v_size_val = window.get('v_size', 0)
                             v_size_html = f"<div style='color:#e60012; font-size:12px; font-weight:bold; margin-top:2px;'>{v_size_val}</div>" if v_size_val > 0 and "U" in window['shape'] else ""
                             
@@ -458,9 +503,9 @@ with tab1:
                             elif "2W" in window['shape']:
                                 svg_str += get_overlay_html(vd, x/2 if vd == '좌' else x + (draw_w-x)/2, window['shape'])
 
-                            if ratio_txt: svg_str += f"<div style='position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:14px; color:#555; font-weight:bold; z-index:1;'>{ratio_txt}</div>"
-                            h_pos_val = window.get('h_pos', 0)
-                            if h_pos_val > 0: svg_str += f"<div style='position:absolute; left:3px; bottom:15px; border-left:2px solid #e60012; border-bottom:2px solid #e60012; padding:2px; color:#e60012; font-size:11px; font-weight:bold; line-height:1;'>핸들{h_pos_val}</div>"
+                        if ratio_txt: svg_str += f"<div style='position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:14px; color:#555; font-weight:bold; z-index:1;'>{ratio_txt}</div>"
+                        h_pos_val = window.get('h_pos', 0)
+                        if h_pos_val > 0: svg_str += f"<div style='position:absolute; left:3px; bottom:15px; border-left:2px solid #e60012; border-bottom:2px solid #e60012; padding:2px; color:#e60012; font-size:11px; font-weight:bold; line-height:1;'>핸들{h_pos_val}</div>"
                         
                         svg_str += f"</div></div>" 
                         
@@ -474,17 +519,17 @@ with tab1:
                 group_html += "</div></div>"
                 all_svg_html_blocks.append(group_html)
                 
-                with render_cols[g_idx % 2]:
+                with g_cols[g_idx % 2]:
                     st.markdown(group_html, unsafe_allow_html=True)
                     btn_cols = st.columns(len(win_list))
                     for i, w_item in enumerate(win_list):
                         with btn_cols[i]:
-                            bc1, bc2 = st.columns(2)
-                            if bc1.button("✏️", key=f"e_{w_item['num']}", help="수정"): st.session_state.edit_target = w_item['num']; st.rerun()
-                            if bc2.button("🗑️", key=f"d_{w_item['num']}", help="삭제"): delete_window(w_item['num']); st.rerun()
+                            _, bc1, bc2, _ = st.columns([0.5, 1.5, 1.5, 0.5])
+                            if bc1.button("✏️", key=f"e_{w_item['num']}", help="수정", use_container_width=True): st.session_state.edit_target = w_item['num']; st.rerun()
+                            if bc2.button("🗑️", key=f"d_{w_item['num']}", help="삭제", use_container_width=True): delete_window(w_item['num']); st.rerun()
                     st.markdown("<br>", unsafe_allow_html=True)
                 
-            st.session_state.rendered_svg = "<div style='display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-start;'>" + "".join(all_svg_html_blocks) + "</div>"
+            st.session_state.rendered_svg = "<div style='display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-start; justify-content: flex-start;'>" + "".join(all_svg_html_blocks) + "</div>"
         else:
             st.info("우측에서 창호를 설계해 주세요.")
 
@@ -520,16 +565,23 @@ with tab1:
             loc_name = st.text_input("설치 위치 (명칭)", value=get_val('loc', ''))
             
             c_c1, c_c2 = st.columns(2)
-            cat_options = ["선택", "발코니창/일반창", "고정창", "터닝도어"]
+            cat_options = ["선택", "발코니창/일반창", "고정창", "터닝도어", "공틀", "PJ창"]
             cat = c_c1.selectbox("창호 구분", cat_options, index=cat_options.index(get_val('cat', '선택')))
             
             type_options = ["선택"]
             if cat == "발코니창/일반창": type_options += ["HBF-141(발코니단창)", "HBF-251(발코니이중창)", "HBF-115(일반단창)", "HBF-230(일반이중창)", "HBF-225TM(공틀단창)"]
             elif cat == "고정창": type_options += ["CB-90 100면유리", "CB-90 45면유리", "PJ-FIX", "BF-115 F", "BF-141 F"]
             elif cat == "터닝도어": type_options += ["터닝도어"]
+            elif cat == "공틀": type_options += ["CB90", "CB45"]
+            elif cat == "PJ창": type_options += ["PJ창"]
             win_type = c_c2.selectbox("창호 종류", type_options, index=type_options.index(get_val('type', '선택')) if get_val('type', '선택') in type_options else 0)
 
-            shape_options = ["FIX", "2F", "3F", "4F"] if cat == "고정창" else (["선택", "미는문/우핸들", "미는문/좌핸들", "당기는문/우핸들", "당기는문/좌핸들"] if cat == "터닝도어" else ["선택", "2W", "2W(1:2)", "2WU", "3W(1:2:1)", "3WU", "4W"])
+            shape_options = ["선택"]
+            if cat == "고정창": shape_options += ["FIX", "2F", "3F", "4F"]
+            elif cat == "터닝도어": shape_options += ["미는문/우핸들", "미는문/좌핸들", "당기는문/우핸들", "당기는문/좌핸들"]
+            elif cat == "공틀": shape_options += ["4면공틀", "루버창공틀"]
+            elif cat == "PJ창": shape_options += ["바깥열기"]
+            elif cat == "발코니창/일반창": shape_options += ["2W", "2W(1:2)", "2WU", "3W(1:2:1)", "3WU", "4W"]
             win_shape = st.selectbox("창 형태", shape_options, index=shape_options.index(get_val('shape', '선택')) if get_val('shape', '선택') in shape_options else 0)
 
             cv1, cv2 = st.columns(2)
@@ -575,7 +627,8 @@ with tab1:
 
             btn_label = "✏️ 도면 수정 적용" if st.session_state.edit_target else "✅ 도면 생성 (저장)"
             if st.button(btn_label, type="primary", use_container_width=True):
-                if cat == "선택" or win_type == "선택" or win_shape == "선택": st.error("🚨 구분, 종류, 형태를 선택해주세요!")
+                if cat == "선택" or win_type == "선택" or win_shape == "선택": 
+                    st.error(f"🚨 창호의 [구분: {cat}], [종류: {win_type}], [형태: {win_shape}] 중 '선택' 상태인 항목이 있습니다. 정확히 모두 지정해주세요!")
                 elif width == 0 or height == 0: st.error("🚨 사이즈를 입력해주세요!")
                 elif "U" in win_shape and v_size == 0: st.error("🚨 U창의 V사이즈를 입력해주세요!")
                 else:
@@ -594,7 +647,7 @@ with tab1:
 # TAB 2: 최종 실측지 템플릿 및 인쇄/캡처 출력
 # ==========================================
 with tab2:
-    col_print, col_capture, col_log, col_zoom = st.columns([1, 1.2, 1.2, 3])
+    col_print, col_capture, col_zoom = st.columns([1, 1.2, 4.2]) 
     
     with col_print:
         components.html("""
@@ -604,61 +657,49 @@ with tab2:
         """, height=65)
         
     with col_capture:
-        components.html("""
+        safe_user = urllib.parse.quote(st.session_state.user_name)
+        safe_addr = urllib.parse.quote(st.session_state.site_info.get('address', '주소 미입력'))
+        webhook_url = f"https://script.google.com/macros/s/AKfycbzPCOq6oxDMtkmbNQQKvjeuSU5TlUKHC9XHg6jT59RnXBoH7paF7o2ZmeH851UMZ6Ag/exec?user={safe_user}&address={safe_addr}&count={len(st.session_state.windows_data)}"
+        
+        components.html(f"""
             <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-            <button onclick="takeShot()" style="padding: 12px; width: 100%; background: #fee500; color: #000; border: none; font-weight: 900; border-radius: 5px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); font-size: 14px;">
-                📸 다운로드
+            <button onclick="takeShotAndLog()" style="padding: 12px; width: 100%; background: #fee500; color: #000; border: none; font-weight: 900; border-radius: 5px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); font-size: 14px;">
+                📸 다운로드 및 시트기록
             </button>
             <script>
-                function takeShot() {
+                function takeShotAndLog() {{
                     const target = window.parent.document.getElementById('print-section');
                     const zoomContainer = window.parent.document.getElementById('zoom-container');
                     if(!target) return alert('출력할 도면이 없습니다.');
                     
                     let originalZoom = '';
                     let originalTransform = '';
-                    if (zoomContainer) {
+                    if (zoomContainer) {{
                         originalZoom = zoomContainer.style.zoom;
                         originalTransform = zoomContainer.style.transform;
                         zoomContainer.style.zoom = '100%';
                         zoomContainer.style.transform = 'scale(1.0)';
-                    }
+                    }}
                     
-                    html2canvas(target, { scale: 3, useCORS: true, backgroundColor: '#ffffff', logging: false }).then(canvas => {
+                    html2canvas(target, {{ scale: 3, useCORS: true, backgroundColor: '#ffffff', logging: false }}).then(canvas => {{
                         let link = document.createElement('a');
                         link.download = 'KCC_현장실측지.png';
                         link.href = canvas.toDataURL('image/png');
                         link.click();
                         
-                        if (zoomContainer) {
+                        if (zoomContainer) {{
                             zoomContainer.style.zoom = originalZoom;
                             zoomContainer.style.transform = originalTransform;
-                        }
-                    });
-                }
+                        }}
+                        
+                        fetch("{webhook_url}", {{ mode: 'no-cors' }})
+                        .then(() => {{
+                            console.log('구글 시트 전송 완료');
+                        }}).catch(err => console.error('전송 실패:', err));
+                    }});
+                }}
             </script>
         """, height=65)
-
-    with col_log:
-        if st.button("📤 작업 완료 (시트 기록)", type="secondary", use_container_width=True):
-            try:
-                WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzPCOq6oxDMtkmbNQQKvjeuSU5TlUKHC9XHg6jT59RnXBoH7paF7o2ZmeH851UMZ6Ag/exec" 
-                
-                if WEBHOOK_URL:
-                    params = {
-                        "user": st.session_state.user_name,
-                        "address": info.get('address', '주소 미입력'),
-                        "count": len(st.session_state.windows_data)
-                    }
-                    response = requests.get(WEBHOOK_URL, params=params)
-                    if response.status_code == 200:
-                        st.success("✅ 본사 서버(구글 시트)로 작업 내역이 전송되었습니다!")
-                    else:
-                        st.error("전송에 실패했습니다. (서버 응답 오류)")
-                else:
-                    st.warning("⚠️ 아직 구글 앱스스크립트 URL이 코드에 입력되지 않았습니다.")
-            except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
 
     with col_zoom:
         zoom_level = st.slider("🔍 출력 도면 크기 조절 (창호가 많으면 줄이고, 적으면 키워서 1장에 맞추세요!)", min_value=50, max_value=200, value=100, step=5)
@@ -710,8 +751,8 @@ with tab2:
 <div style="font-size: 14px; white-space: pre-wrap; margin-top:10px; color:black;">{notes_html}</div>
 </div>
 </div>
-<div style="width: 78%; border: 2px solid black; padding: 10px; background: white;">
-<div id="zoom-container" style="zoom: {zoom_level}%; -moz-transform: scale({zoom_level/100}); -moz-transform-origin: top left;">
+<div style="width: 78%; border: 2px solid black; padding: 10px; background: white; flex-wrap: wrap;">
+<div id="zoom-container" style="zoom: {zoom_level}%; -moz-transform: scale({zoom_level/100}); -moz-transform-origin: top left; display:flex; flex-wrap:wrap; justify-content:flex-start;">
 {svg_blocks}
 </div>
 </div>
