@@ -18,7 +18,6 @@ if 'logged_in' not in st.session_state:
 if 'user_name' not in st.session_state:
     st.session_state.user_name = ""
 
-# 로그인이 안 되어 있으면 로그인 화면만 보여주고 멈춤(그만)
 if not st.session_state.logged_in:
     st.markdown("<br><br><h1 style='text-align: center; color: #004b9b;'>KCC Homecc 스마트 실측 시스템</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #666;'>직원 확인을 위해 이름(또는 사번)을 입력해 주세요.</p>", unsafe_allow_html=True)
@@ -76,7 +75,7 @@ st.markdown(f"""
             </text>
         </svg>
         <div style="font-size: 14px; color: #888; border-left: 2px solid #ddd; padding-left: 15px; font-weight: bold; align-self: flex-end; padding-bottom: 6px;">
-            Smart Measurement System v6.4 (Team Edition)
+            Smart Measurement System v7.3 (Bug Fix Edition)
         </div>
     </div>
     <div style="font-size: 15px; font-weight: bold; color: #004b9b; background: #e8f0fe; padding: 8px 15px; border-radius: 20px;">
@@ -84,6 +83,61 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+def get_image_base64(pil_image):
+    if pil_image is None: return ""
+    buffered = BytesIO()
+    pil_image.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode()
+
+def redraw_markers():
+    if st.session_state.floor_plan_original:
+        img_draw = st.session_state.floor_plan_original.copy()
+        draw = ImageDraw.Draw(img_draw)
+        for marker in st.session_state.markers:
+            mx, my = marker['x'], marker['y']
+            draw.ellipse((mx-15, my-15, mx+15, my+15), fill='#e60012', outline='darkred')
+            txt = str(marker['num'])
+            for ox in [-1, 0, 1]:
+                for oy in [-1, 0, 1]:
+                    draw.text((mx-4+ox, my-6+oy), txt, fill='white')
+        st.session_state.floor_plan_marked = img_draw
+
+def sync_data_and_markers():
+    mapping = {}
+    new_num = 1
+    
+    for w in st.session_state.windows_data:
+        mapping[w['num']] = new_num
+        w['num'] = new_num
+        new_num += 1
+        
+    st.session_state.current_window_num = new_num
+    
+    valid_markers = []
+    for m in st.session_state.markers:
+        if m['num'] in mapping:
+            m['num'] = mapping[m['num']]
+            valid_markers.append(m)
+            
+    floating = [m for m in st.session_state.markers if m['num'] not in mapping and m['num'] >= new_num]
+    if floating: 
+        valid_markers.append({'x': floating[-1]['x'], 'y': floating[-1]['y'], 'num': new_num})
+        
+    st.session_state.markers = valid_markers
+    redraw_markers()
+
+def delete_window(target_num):
+    st.session_state.windows_data = [w for w in st.session_state.windows_data if w['num'] != target_num]
+    st.session_state.markers = [m for m in st.session_state.markers if m['num'] != target_num]
+    if st.session_state.edit_target == target_num: st.session_state.edit_target = None
+    sync_data_and_markers()
+
+def move_window(target_num, direction):
+    idx = next((i for i, w in enumerate(st.session_state.windows_data) if w['num'] == target_num), -1)
+    if idx != -1 and 0 <= idx + direction < len(st.session_state.windows_data):
+        st.session_state.windows_data[idx], st.session_state.windows_data[idx + direction] = st.session_state.windows_data[idx + direction], st.session_state.windows_data[idx]
+        sync_data_and_markers()
 
 with st.expander("⚙️ 시스템 데이터 관리 (초기화 / 저장 / 불러오기)", expanded=False):
     sys1, sys2, sys3 = st.columns(3)
@@ -95,7 +149,13 @@ with st.expander("⚙️ 시스템 데이터 관리 (초기화 / 저장 / 불러
             
     with sys2:
         if 'windows_data' in st.session_state and st.session_state.windows_data:
-            save_data = {"windows": st.session_state.windows_data, "site_info": st.session_state.get('site_info', {})}
+            save_data = {
+                "windows": st.session_state.windows_data, 
+                "site_info": st.session_state.get('site_info', {}),
+                "markers": st.session_state.get('markers', []),
+                "uploaded_filename": st.session_state.get('uploaded_filename', None),
+                "floor_plan_base64": get_image_base64(st.session_state.get('floor_plan_original', None)) if st.session_state.get('floor_plan_original') else None
+            }
             json_data = json.dumps(save_data, ensure_ascii=False, indent=2)
             st.download_button("💾 현재 데이터 저장 (JSON)", data=json_data, file_name="KCC_실측데이터.json", mime="application/json", use_container_width=True)
         else:
@@ -109,11 +169,35 @@ with st.expander("⚙️ 시스템 데이터 관리 (초기화 / 저장 / 불러
                     loaded_data = json.load(uploaded_json)
                     if "windows" in loaded_data:
                         st.session_state.windows_data = loaded_data["windows"]
+                        
+                        if st.session_state.windows_data:
+                            max_gid = max([w.get('group_id', w['num']) for w in st.session_state.windows_data] + [0])
+                            st.session_state.group_counter = max_gid + 1
+                        else:
+                            st.session_state.group_counter = 1
+                            
                         st.session_state.site_info = loaded_data.get("site_info", {})
+                        st.session_state.markers = loaded_data.get("markers", [])
+                        st.session_state.uploaded_filename = loaded_data.get("uploaded_filename", None)
+                        
+                        if loaded_data.get("floor_plan_base64"):
+                            img_data = base64.b64decode(loaded_data["floor_plan_base64"])
+                            img = Image.open(BytesIO(img_data))
+                            st.session_state.floor_plan_original = img
+                            st.session_state.floor_plan_marked = img.copy()
+                        else:
+                            st.session_state.floor_plan_original = None
+                            st.session_state.floor_plan_marked = None
                     else:
                         st.session_state.windows_data = loaded_data
-                    max_num = max([w['num'] for w in st.session_state.windows_data]) if st.session_state.windows_data else 0
-                    st.session_state.current_window_num = max_num + 1
+                        
+                        if st.session_state.windows_data:
+                            max_gid = max([w.get('group_id', w['num']) for w in st.session_state.windows_data] + [0])
+                            st.session_state.group_counter = max_gid + 1
+                        else:
+                            st.session_state.group_counter = 1
+                        
+                    sync_data_and_markers()
                     st.rerun()
                 except Exception as e:
                     st.error("데이터 형식이 맞지 않습니다.")
@@ -139,44 +223,6 @@ if 'site_info' not in st.session_state:
 def get_circled_num(n):
     circles = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
     return circles[n-1] if 1 <= n <= 20 else f"[{n}]"
-
-def renumber_and_redraw():
-    st.session_state.windows_data.sort(key=lambda x: x['num'])
-    mapping, new_num = {}, 1
-    for w in st.session_state.windows_data:
-        mapping[w['num']] = new_num; w['num'] = new_num; new_num += 1
-    st.session_state.current_window_num = new_num
-    
-    valid_markers = []
-    for m in st.session_state.markers:
-        if m['num'] in mapping:
-            m['num'] = mapping[m['num']]; valid_markers.append(m)
-    floating = [m for m in st.session_state.markers if m['num'] not in mapping and m['num'] >= new_num]
-    if floating: valid_markers.append({'x': floating[-1]['x'], 'y': floating[-1]['y'], 'num': new_num})
-    st.session_state.markers = valid_markers
-    
-    if st.session_state.floor_plan_original:
-        img_draw = st.session_state.floor_plan_original.copy()
-        draw = ImageDraw.Draw(img_draw)
-        for marker in st.session_state.markers:
-            mx, my = marker['x'], marker['y']
-            draw.ellipse((mx-15, my-15, mx+15, my+15), fill='#e60012', outline='darkred')
-            txt = str(marker['num'])
-            for ox in [-1, 0, 1]:
-                for oy in [-1, 0, 1]:
-                    draw.text((mx-4+ox, my-6+oy), txt, fill='white')
-        st.session_state.floor_plan_marked = img_draw
-
-def delete_window(target_num):
-    st.session_state.windows_data = [w for w in st.session_state.windows_data if w['num'] != target_num]
-    if st.session_state.edit_target == target_num: st.session_state.edit_target = None
-    renumber_and_redraw()
-
-def get_image_base64(pil_image):
-    if pil_image is None: return ""
-    buffered = BytesIO()
-    pil_image.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode()
 
 tab1, tab2 = st.tabs(["🛠️ 실측지 도면 설계", "🖨️ 최종 실측지 PDF / 캡처 출력"])
 
@@ -210,6 +256,9 @@ with tab1:
 
     st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
 
+    # 💡 [핵심] 렌더링 시작 전, 현재 작업 중인 타겟 번호를 미리 정의합니다.
+    target_n = st.session_state.edit_target if st.session_state.edit_target else st.session_state.current_window_num
+
     col1, col2, col3 = st.columns([1.5, 3.5, 1.3])
 
     with col1:
@@ -224,32 +273,37 @@ with tab1:
                 st.session_state.floor_plan_marked = img.copy()
                 st.session_state.markers = []
                 st.session_state.uploaded_filename = uploaded_file.name
-            
+        
+        if st.session_state.floor_plan_marked:
             b1, b2, b3 = st.columns(3)
             if b1.button("↻ 90도 회전"): 
                 w, h = st.session_state.floor_plan_original.size
                 st.session_state.floor_plan_original = st.session_state.floor_plan_original.rotate(-90, expand=True)
                 st.session_state.markers = [{'x': h - m['y'], 'y': m['x'], 'num': m['num']} for m in st.session_state.markers]
-                renumber_and_redraw(); st.rerun()
+                redraw_markers(); st.rerun()
             if b2.button("↔ 좌우 반전"): 
                 w, h = st.session_state.floor_plan_original.size
                 st.session_state.floor_plan_original = ImageOps.mirror(st.session_state.floor_plan_original)
                 st.session_state.markers = [{'x': w - m['x'], 'y': m['y'], 'num': m['num']} for m in st.session_state.markers]
-                renumber_and_redraw(); st.rerun()
+                redraw_markers(); st.rerun()
             if b3.button("↕ 상하 반전"): 
                 w, h = st.session_state.floor_plan_original.size
                 st.session_state.floor_plan_original = ImageOps.flip(st.session_state.floor_plan_original)
                 st.session_state.markers = [{'x': m['x'], 'y': h - m['y'], 'num': m['num']} for m in st.session_state.markers]
-                renumber_and_redraw(); st.rerun()
+                redraw_markers(); st.rerun()
 
             st.info("💡 정확한 위치를 클릭하세요.")
             value = streamlit_image_coordinates(st.session_state.floor_plan_marked, key="pil")
             
             if value:
                 if not st.session_state.markers or (st.session_state.markers[-1]['x'] != value['x'] or st.session_state.markers[-1]['y'] != value['y']):
-                    st.session_state.markers.append({'x': value['x'], 'y': value['y'], 'num': st.session_state.current_window_num})
+                    # 💡 [버그 완벽 수정] 현재 설계 중인 타겟 번호(target_n)의 마커가 이미 있으면 삭제하고 최신 위치로 다시 추가합니다!
+                    st.session_state.markers = [m for m in st.session_state.markers if m['num'] != target_n]
+                    st.session_state.markers.append({'x': value['x'], 'y': value['y'], 'num': target_n})
                     st.session_state.edit_target = None
-                    renumber_and_redraw(); st.rerun()
+                    redraw_markers(); st.rerun()
+        else:
+            st.info("도면 이미지를 업로드하거나 데이터를 불러오세요.")
 
     with col2:
         st.subheader("3. 도면 렌더링")
@@ -258,7 +312,6 @@ with tab1:
         if st.session_state.windows_data:
             groups_dict = {}
             for w in st.session_state.windows_data: groups_dict.setdefault(w.get('group_id', w['num']), []).append(w)
-            
             groups_list = sorted(groups_dict.items(), key=lambda x: min(w['num'] for w in x[1]))
             
             g_cols = st.columns(2)
@@ -270,12 +323,9 @@ with tab1:
                 columns = []
                 for w in win_list:
                     v_join = w.get('join_dir', '옆으로 결합(좌우)')
-                    if v_join == '위로 결합(상)' and columns:
-                        columns[-1].insert(0, w)
-                    elif v_join == '아래로 결합(하)' and columns:
-                        columns[-1].append(w)
-                    else:
-                        columns.append([w])
+                    if v_join == '위로 결합(상)' and columns: columns[-1].insert(0, w)
+                    elif v_join == '아래로 결합(하)' and columns: columns[-1].append(w)
+                    else: columns.append([w])
 
                 def get_cbs_html(cb_list, dh):
                     html = ""
@@ -285,8 +335,7 @@ with tab1:
                         qty = cb.get('qty', 1)
                         if qty <= 0: continue
                         
-                        if "45" in cb['type']: real_w = 45
-                        elif "90" in cb['type']: real_w = 45
+                        if "45" in cb['type'] or "90" in cb['type']: real_w = 45
                         elif "135" in cb['type']: real_w = 135
                         else: real_w = 100 
                         
@@ -295,9 +344,13 @@ with tab1:
                         if "45" in cb['type']: w_px = 8
                         elif "90" in cb['type']: w_px = 10
                         elif "135" in cb['type']: w_px = 22
-                        else: w_px = 17 
+                        else: w_px = 14 
                         
-                        color = "#e60012" if ("90" in cb['type'] or "45" in cb['type']) else "#00205b"
+                        if "135" in cb['type']: color = "#ffa500"
+                        elif "45" in cb['type']: color = "#008000"
+                        elif "90" in cb['type']: color = "#e60012"
+                        else: color = "#00205b"
+                        
                         cb_label = cb['type'].split('(')[0]
                         font_sz = "8" if w_px <= 10 else "10"
                         
@@ -305,8 +358,15 @@ with tab1:
                         svg_cb += f"<rect width='{w_px}' height='{dh}' fill='white' />"
                         
                         lines_svg = ""
-                        for i in range(-w_px, int(dh), 4):
-                            lines_svg += f"<line x1='0' y1='{i}' x2='{w_px}' y2='{i+w_px}' stroke='{color}' stroke-width='1.5' />"
+                        if "135" in cb['type']: 
+                            step = w_px
+                            for i in range(0, int(dh), step):
+                                lines_svg += f"<line x1='0' y1='{i}' x2='{w_px}' y2='{i+step}' stroke='{color}' stroke-width='1.5'/>"
+                                lines_svg += f"<line x1='{w_px}' y1='{i}' x2='0' y2='{i+step}' stroke='{color}' stroke-width='1.5'/>"
+                        else:
+                            for i in range(-w_px, int(dh), 4):
+                                lines_svg += f"<line x1='0' y1='{i}' x2='{w_px}' y2='{i+w_px}' stroke='{color}' stroke-width='1.5' />"
+                        
                         svg_cb += lines_svg
                         
                         svg_cb += f"<rect x='0' y='{dh}' width='{w_px}' height='20' fill='white' />"
@@ -324,6 +384,62 @@ with tab1:
                         return f"<div style='display:flex; flex-direction:column; align-items:center;'><div style='font-size:11px; font-weight:bold; color:#e60012; height:15px; display:flex; align-items:flex-end; padding-bottom:3px; box-sizing:border-box;'>{total_w_real}</div><div style='display:flex;'>{html}</div></div>", total_w_real
                     return "", 0
 
+                def get_cbs_html_horizontal(cb_list, dw):
+                    html = ""
+                    total_h_real = 0
+                    
+                    for cb in cb_list:
+                        qty = cb.get('qty', 1)
+                        if qty <= 0: continue
+                        
+                        if "45" in cb['type'] or "90" in cb['type']: real_h = 45
+                        elif "135" in cb['type']: real_h = 135
+                        else: real_h = 100 
+                        
+                        total_h_real += real_h
+                        
+                        if "45" in cb['type']: h_px = 8
+                        elif "90" in cb['type']: h_px = 10
+                        elif "135" in cb['type']: h_px = 22
+                        else: h_px = 14 
+                        
+                        if "135" in cb['type']: color = "#ffa500"
+                        elif "45" in cb['type']: color = "#008000"
+                        elif "90" in cb['type']: color = "#e60012"
+                        else: color = "#00205b"
+                        
+                        cb_label = cb['type'].split('(')[0]
+                        font_sz = "8" if h_px <= 10 else "10"
+                        
+                        svg_cb = f"<svg width='{dw}' height='{h_px}' xmlns='http://www.w3.org/2000/svg' style='margin-bottom:1px; display:block;'>"
+                        svg_cb += f"<rect width='{dw}' height='{h_px}' fill='white' />"
+                        
+                        lines_svg = ""
+                        if "135" in cb['type']: 
+                            step = h_px
+                            for i in range(0, int(dw), step):
+                                lines_svg += f"<line x1='{i}' y1='0' x2='{i+step}' y2='{h_px}' stroke='{color}' stroke-width='1.5'/>"
+                                lines_svg += f"<line x1='{i}' y1='{h_px}' x2='{i+step}' y2='0' stroke='{color}' stroke-width='1.5'/>"
+                        else:
+                            for i in range(-h_px, int(dw), 4):
+                                lines_svg += f"<line x1='{i}' y1='0' x2='{i+h_px}' y2='{h_px}' stroke='{color}' stroke-width='1.5' />"
+                        
+                        svg_cb += lines_svg
+                        svg_cb += f"<rect width='{dw}' height='{h_px}' fill='none' stroke='black' stroke-width='1'/>"
+                        
+                        qty_w = f" X{qty}" if qty > 1 else ""
+                        qty_r = f"<tspan fill='red'> X{qty}</tspan>" if qty > 1 else ""
+                        
+                        svg_cb += f"<text x='{dw/2}' y='{h_px/2}' dy='.3em' font-size='{font_sz}' font-weight='900' fill='white' stroke='white' stroke-width='2' text-anchor='middle'>{cb_label}{qty_w}</text>"
+                        svg_cb += f"<text x='{dw/2}' y='{h_px/2}' dy='.3em' font-size='{font_sz}' font-weight='900' fill='black' text-anchor='middle'>{cb_label}{qty_r}</text>"
+                            
+                        svg_cb += "</svg>"
+                        html += svg_cb
+                    
+                    if total_h_real > 0:
+                        return f"<div style='display:flex; flex-direction:column; align-items:center; margin-bottom: 2px;'><div style='font-size:11px; font-weight:bold; color:#e60012; line-height:1;'>{total_h_real}</div><div style='display:flex; flex-direction:column;'>{html}</div></div>", total_h_real
+                    return "", 0
+
                 group_html += "<div style='display:flex; align-items:flex-start;'>"
                 
                 for col in columns:
@@ -335,51 +451,38 @@ with tab1:
                         
                         cb_l_html, _ = get_cbs_html(window.get('cb_left', []), draw_h)
                         cb_r_html, _ = get_cbs_html(window.get('cb_right', []), draw_h)
+                        cb_t_html, _ = get_cbs_html_horizontal(window.get('cb_top', []), draw_w)
                         
                         group_html += f"<div style='display:flex; flex-direction:column; align-items:center; min-width: max-content; margin-bottom: 8px;'>"
                         c_num = get_circled_num(window['num'])
                         group_html += f"<div style='text-align:center; margin-bottom: 2px; min-height:35px;'><div style='font-size: 15px; font-weight:bold; white-space:nowrap; color:#333;'>{c_num}{window.get('loc', '')}({window['shape']})</div><div style='font-size: 13px; color:#777; white-space:nowrap;'>{window['type']}</div></div>"
 
-                        group_html += f"<div style='display:flex; align-items:flex-start;'>"
-                        if window.get('cb_left', []): group_html += cb_l_html
-                        
                         gls = window.get('glass', '기본(투명)')
                         cat_val = window.get('cat', '')
                         
                         extra_svg_elements = ""
                         if gls == "모루":
                             bg_fill = "#f4f6f8" 
-                            for i in range(4, int(draw_w), 8):
-                                extra_svg_elements += f"<rect x='{i}' y='0' width='4' height='{draw_h}' fill='#dfe3e8' />"
+                            for i in range(4, int(draw_w), 8): extra_svg_elements += f"<rect x='{i}' y='0' width='4' height='{draw_h}' fill='#dfe3e8' />"
                         elif gls == "미스트":
                             bg_fill = "#e6f2ff" 
-                            for x in range(0, int(draw_w), 4):
-                                extra_svg_elements += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='#cce5ff' stroke-width='1'/>"
-                            for y in range(0, int(draw_h), 4):
-                                extra_svg_elements += f"<line x1='0' y1='{y}' x2='{draw_w}' y2='{y}' stroke='#cce5ff' stroke-width='1'/>"
-                        else:
-                            bg_fill = "#fafafa"
+                            for x in range(0, int(draw_w), 4): extra_svg_elements += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='#cce5ff' stroke-width='1'/>"
+                            for y in range(0, int(draw_h), 4): extra_svg_elements += f"<line x1='0' y1='{y}' x2='{draw_w}' y2='{y}' stroke='#cce5ff' stroke-width='1'/>"
+                        else: bg_fill = "#fafafa"
 
                         svg_str = f"<div style='display:flex; flex-direction:column; align-items:center;'><div style='height:15px;'></div>" 
                         svg_str += f"<div style='position:relative; width:{draw_w}px; height:{draw_h}px;'>"
-                        
                         svg_str += f"<svg width='{draw_w}' height='{draw_h}' xmlns='http://www.w3.org/2000/svg' style='display:block;'>"
                         svg_str += f"<rect width='{draw_w}' height='{draw_h}' fill='{bg_fill}' stroke='black' stroke-width='2'/>"
                         svg_str += extra_svg_elements
                         
                         vs_px = int(window.get('v_size', 0) * PIXEL_SCALE) if window.get('v_size', 0) > 0 else 0
-                        
-                        # [오류 해결] 에러 방지를 위해 변수 빈 값으로 사전 초기화
                         ratio_txt = ""
 
                         if "문/" in window['shape'] or cat_val == "터닝도어":
                             if cat_val == "터닝도어":
-                                # 외틀 (프레임) - 심플하게
                                 svg_str += f"<rect x='2' y='2' width='{draw_w-4}' height='{draw_h-4}' fill='none' stroke='black' stroke-width='2'/>"
-                                # 짝 (도어)
                                 svg_str += f"<rect x='8' y='8' width='{draw_w-16}' height='{draw_h-16}' fill='none' stroke='black' stroke-width='1'/>"
-                                
-                                # 터닝도어 방향 보조선 (핸들 반대쪽인 경첩으로 모이도록)
                                 if "우핸들" in window['shape']:
                                     svg_str += f"<line x1='{draw_w-8}' y1='8' x2='8' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
                                     svg_str += f"<line x1='{draw_w-8}' y1='{draw_h-8}' x2='8' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
@@ -388,33 +491,26 @@ with tab1:
                                     svg_str += f"<line x1='8' y1='{draw_h-8}' x2='{draw_w-8}' y2='{draw_h/2}' stroke='gray' stroke-width='1' stroke-dasharray='4,4'/>"
 
                             shape_text = window['shape'].split('/')[0] if '/' in window['shape'] else window['shape']
-                            if shape_text != "선택":
-                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{shape_text}</text>"
-                            if '/' in window['shape']:
-                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
-                            if gls != "기본(투명)":
-                                svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 25}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>"
+                            if shape_text != "선택": svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{shape_text}</text>"
+                            if '/' in window['shape']: svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 8}' font-size='11' fill='#00205b' text-anchor='middle'>{window['shape'].split('/')[1]}</text>"
+                            if gls != "기본(투명)": svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 + 25}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>"
                             
                             handle_w, handle_h = 6, 20
                             if "우핸들" in window['shape']:
                                 hx = draw_w - 14 if cat_val == "터닝도어" else draw_w - 5 - handle_w
-                                hy = draw_h / 2 - handle_h / 2
-                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
+                                svg_str += f"<rect x='{hx}' y='{draw_h/2 - handle_h/2}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
                             elif "좌핸들" in window['shape']:
                                 hx = 8 if cat_val == "터닝도어" else 5
-                                hy = draw_h / 2 - handle_h / 2
-                                svg_str += f"<rect x='{hx}' y='{hy}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
+                                svg_str += f"<rect x='{hx}' y='{draw_h/2 - handle_h/2}' width='{handle_w}' height='{handle_h}' fill='#333' stroke='black' rx='2'/>"
                                 
                         else:
                             gls_txt = f"<text x='{draw_w/2}' y='{draw_h/2 + 20}' font-size='12' fill='#004b9b' font-weight='bold' text-anchor='middle'>{gls}</text>" if gls != "기본(투명)" else ""
 
                             if "2W" in window['shape']:
-                                if "(1:2)" in window['shape']: ratio_txt = "1:2"
                                 vd = window.get('vent_dir', '좌')
                                 x = vs_px if "U" in window['shape'] and vd == '좌' else (draw_w - vs_px if "U" in window['shape'] and vd == '우' else (draw_w/3 if "(1:2)" in window['shape'] and vd == '좌' else (draw_w*2/3 if "(1:2)" in window['shape'] and vd == '우' else draw_w/2)))
                                 svg_str += f"<line x1='{x}' y1='0' x2='{x}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
                             elif "3W" in window['shape']:
-                                if "1:2:1" in window['shape']: ratio_txt = "1:2:1"
                                 x1, x2 = (vs_px, draw_w - vs_px) if "U" in window['shape'] and vs_px > 0 else (draw_w/4, draw_w*3/4)
                                 svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />{gls_txt}"
                             elif "4W" in window['shape']:
@@ -423,56 +519,36 @@ with tab1:
                             elif "FIX" in window['shape'] or window['shape'] in ["2F", "3F", "4F"]:
                                 if window['shape'] == "2F":
                                     svg_str += f"<line x1='{draw_w/2}' y1='0' x2='{draw_w/2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<text x='{draw_w/4}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w*3/4}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
                                 elif window['shape'] == "3F":
                                     x1, x2 = draw_w/3, draw_w*2/3
-                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<text x='{draw_w/6}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w*5/6}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
                                 elif window['shape'] == "4F":
                                     x1, x2, x3 = draw_w/4, draw_w/2, draw_w*3/4
-                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<line x1='{x3}' y1='0' x2='{x3}' y2='{draw_h}' stroke='black' stroke-width='2' />"
-                                    svg_str += f"<text x='{draw_w/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w*3/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w*5/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                    svg_str += f"<text x='{draw_w*7/8}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
-                                else:
-                                    svg_str += f"<text x='{draw_w/2}' y='{draw_h/2}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>FIX</text>"
+                                    svg_str += f"<line x1='{x1}' y1='0' x2='{x1}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x2}' y1='0' x2='{x2}' y2='{draw_h}' stroke='black' stroke-width='2' /><line x1='{x3}' y1='0' x2='{x3}' y2='{draw_h}' stroke='black' stroke-width='2' />"
                             elif cat_val == "PJ창":
-                                svg_str += f"<line x1='0' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/>"
-                                svg_str += f"<line x1='{draw_w}' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/>"
+                                svg_str += f"<line x1='0' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/><line x1='{draw_w}' y1='{draw_h}' x2='{draw_w/2}' y2='0' stroke='gray' stroke-width='1' stroke-dasharray='3,3'/>"
                             svg_str += gls_txt
 
                         raw_type = window.get('type', '')
                         shape_val = window.get('shape', '')
-                        
                         sub_prod_name = ""
+                        
                         if cat_val == "공틀":
                             prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
                             sub_prod_name = shape_val
-                        elif cat_val == "PJ창":
-                            prod_name = "PJ"
-                        elif cat_val == "터닝도어":
-                            prod_name = "TD"
-                        else:
-                            prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
-                        
-                        shape_text = window['shape'].split('/')[0] if '/' in window['shape'] else window['shape']
-                        if shape_text != "선택" and cat_val != "공틀" and "문/" not in window['shape'] and cat_val != "터닝도어":
-                            svg_str += f"<text x='{draw_w/2}' y='{draw_h/2 - 8}' font-size='12' fill='black' font-weight='bold' text-anchor='middle'>{shape_text}</text>"
+                        elif cat_val == "PJ창": prod_name = "PJ"
+                        elif cat_val == "터닝도어": prod_name = "TD"
+                        else: prod_name = raw_type.split('(')[0].replace('HBF-', '').replace('BF-', '').strip()
                         
                         if prod_name and prod_name != "선택" and prod_name != "선택 선택":
                             svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='white' stroke='white' stroke-width='4' stroke-linejoin='round' text-anchor='middle'>{prod_name}</text>"
                             svg_str += f"<text x='{draw_w/2}' y='22' font-size='15' font-weight='bold' fill='#000' text-anchor='middle'>{prod_name}</text>"
-                            if sub_prod_name:
-                                svg_str += f"<text x='{draw_w/2}' y='39' font-size='13' font-weight='bold' fill='#e60012' text-anchor='middle'>{sub_prod_name}</text>"
-                            
+                            if sub_prod_name: svg_str += f"<text x='{draw_w/2}' y='39' font-size='13' font-weight='bold' fill='#e60012' text-anchor='middle'>{sub_prod_name}</text>"
+                        
                         svg_str += "</svg>" 
+
+                        if cat_val == "PJ창" and window.get('screen') == 'Y':
+                            svg_str += f"<div style='position:absolute; left:{draw_w + 8}px; top:50%; transform:translateY(-50%); font-size:12px; font-weight:bold; color:#e60012; z-index:5; white-space:nowrap;'>롤방충망</div>"
 
                         if window['shape'] not in ["FIX", "2F", "3F", "4F"] and "문/" not in window['shape'] and cat_val != "터닝도어":
                             v_size_val = window.get('v_size', 0)
@@ -481,38 +557,39 @@ with tab1:
                             def get_overlay_html(dir_val, pos_x, w_shape):
                                 scr = window.get('screen', 'Y')
                                 arr = "←" if dir_val == '우' else "→"
-                                
                                 scr_html = ""
-                                if scr == 'Y':
+                                if scr == 'Y' and cat_val != "PJ창": 
                                     scr_html = "<div style='display:flex; align-items:center; justify-content:center; gap:3px; margin-bottom:1px;'><span style='font-size:18px; font-weight:bold; color:#e60012;'>#</span><span style='font-size:12px; font-weight:bold; color:#e60012;'>(망)</span></div>"
-                                    
-                                if "3W" in w_shape or "4W" in w_shape:
-                                    dir_html = f"<span style='font-size:18px; font-weight:bold; color:#e60012;'>{arr}</span>"
-                                else:
-                                    dir_html = f"<span style='font-size:18px;'>{arr}</span> <span style='font-size:14px; font-weight:bold;'>{dir_val}</span>" if dir_val == '우' else f"<span style='font-size:14px; font-weight:bold;'>{dir_val}</span> <span style='font-size:18px;'>{arr}</span>"
-                                    
+                                if "3W" in w_shape or "4W" in w_shape: dir_html = f"<span style='font-size:18px; font-weight:bold; color:#e60012;'>{arr}</span>"
+                                else: dir_html = f"<span style='font-size:18px;'>{arr}</span> <span style='font-size:14px; font-weight:bold;'>{dir_val}</span>" if dir_val == '우' else f"<span style='font-size:14px; font-weight:bold;'>{dir_val}</span> <span style='font-size:18px;'>{arr}</span>"
                                 return f"<div style='position:absolute; left:{pos_x}px; top:50%; transform:translate(-50%, -50%); text-align:center; line-height:1.2; z-index:5;'>{scr_html}<div style='display:flex; align-items:center; justify-content:center; gap:2px; color:#e60012;'>{dir_html}</div>{v_size_html}</div>"
 
                             vd = window.get('vent_dir', '좌')
-                            if "3W" in window['shape']:
-                                svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
-                                svg_str += get_overlay_html('우', x2 + (draw_w - x2) / 2, window['shape'])
-                            elif "4W" in window['shape']:
-                                svg_str += get_overlay_html('좌', x1 / 2, window['shape'])
-                                svg_str += get_overlay_html('우', x3 + (draw_w - x3) / 2, window['shape'])
-                            elif "2W" in window['shape']:
-                                svg_str += get_overlay_html(vd, x/2 if vd == '좌' else x + (draw_w-x)/2, window['shape'])
+                            if cat_val != "PJ창":
+                                if "3W" in window['shape']:
+                                    svg_str += get_overlay_html('좌', x1 / 2, window['shape']); svg_str += get_overlay_html('우', x2 + (draw_w - x2) / 2, window['shape'])
+                                elif "4W" in window['shape']:
+                                    svg_str += get_overlay_html('좌', x1 / 2, window['shape']); svg_str += get_overlay_html('우', x3 + (draw_w - x3) / 2, window['shape'])
+                                elif "2W" in window['shape']:
+                                    svg_str += get_overlay_html(vd, x/2 if vd == '좌' else x + (draw_w-x)/2, window['shape'])
 
-                        if ratio_txt: svg_str += f"<div style='position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:14px; color:#555; font-weight:bold; z-index:1;'>{ratio_txt}</div>"
                         h_pos_val = window.get('h_pos', 0)
                         if h_pos_val > 0: svg_str += f"<div style='position:absolute; left:3px; bottom:15px; border-left:2px solid #e60012; border-bottom:2px solid #e60012; padding:2px; color:#e60012; font-size:11px; font-weight:bold; line-height:1;'>핸들{h_pos_val}</div>"
                         
                         svg_str += f"</div></div>" 
                         
-                        group_html += svg_str
-                        if window.get('cb_right', []): group_html += cb_r_html
+                        center_col_html = f"<div style='display:flex; flex-direction:column; align-items:center;'>"
+                        if window.get('cb_top', []): center_col_html += cb_t_html
+                        center_col_html += svg_str
+                        center_col_html += "</div>"
                         
-                        group_html += f"</div><div style='font-size: 15px; font-weight: 900; letter-spacing: 0.5px; margin-top: 4px; color:#000;'>{window['w']} * {window['h']}(H)</div></div>" 
+                        group_html += f"<div style='display:flex; align-items:flex-start; justify-content:center;'>"
+                        if window.get('cb_left', []): group_html += cb_l_html
+                        group_html += center_col_html
+                        if window.get('cb_right', []): group_html += cb_r_html
+                        group_html += "</div>"
+                        
+                        group_html += f"<div style='font-size: 15px; font-weight: 900; letter-spacing: 0.5px; margin-top: 4px; color:#000;'>{window['w']} * {window['h']}(H)</div></div>" 
                     
                     group_html += "</div>"
                 
@@ -521,12 +598,20 @@ with tab1:
                 
                 with g_cols[g_idx % 2]:
                     st.markdown(group_html, unsafe_allow_html=True)
+                    
                     btn_cols = st.columns(len(win_list))
                     for i, w_item in enumerate(win_list):
                         with btn_cols[i]:
-                            _, bc1, bc2, _ = st.columns([0.5, 1.5, 1.5, 0.5])
-                            if bc1.button("✏️", key=f"e_{w_item['num']}", help="수정", use_container_width=True): st.session_state.edit_target = w_item['num']; st.rerun()
-                            if bc2.button("🗑️", key=f"d_{w_item['num']}", help="삭제", use_container_width=True): delete_window(w_item['num']); st.rerun()
+                            col_spacer1, b_edit, b_up, b_dn, b_del, col_spacer2 = st.columns([1, 0.6, 0.6, 0.6, 0.6, 1])
+                            
+                            if b_edit.button("✏️", key=f"e_{w_item['num']}", help="수정"): 
+                                st.session_state.edit_target = w_item['num']; st.rerun()
+                            if b_up.button("◀", key=f"u_{w_item['num']}", help="앞으로 당기기"): 
+                                move_window(w_item['num'], -1); st.rerun()
+                            if b_dn.button("▶", key=f"d_{w_item['num']}", help="뒤로 밀기"): 
+                                move_window(w_item['num'], 1); st.rerun()
+                            if b_del.button("🗑️", key=f"del_{w_item['num']}", help="삭제"): 
+                                delete_window(w_item['num']); st.rerun()
                     st.markdown("<br>", unsafe_allow_html=True)
                 
             st.session_state.rendered_svg = "<div style='display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-start; justify-content: flex-start;'>" + "".join(all_svg_html_blocks) + "</div>"
@@ -534,7 +619,6 @@ with tab1:
             st.info("우측에서 창호를 설계해 주세요.")
 
     with col3:
-        target_n = st.session_state.edit_target if st.session_state.edit_target else st.session_state.current_window_num
         target_title = f"<span style='color:#0056b3;'>{st.session_state.edit_target}번 창호 수정 중</span>" if st.session_state.edit_target else f"<span style='color:#e60012;'>{st.session_state.current_window_num}번 새 창호 설계</span>"
         st.subheader("4. 창호 상세 입력")
         st.markdown(f"**타겟: {target_title}**", unsafe_allow_html=True)
@@ -546,6 +630,13 @@ with tab1:
         else:
             edit_data = next((w for w in st.session_state.windows_data if w['num'] == target_n), None) if st.session_state.edit_target else None
             def get_val(key, default): return edit_data.get(key, default) if edit_data else default
+            
+            # 💡 [버그 완벽 수정 2] 과거 저장 데이터와 현재 UI 옵션의 미세한 텍스트 차이를 스무스하게 연결해주는 함수!
+            def get_fuzzy_index(options, saved_val):
+                if saved_val in options: return options.index(saved_val)
+                for i, opt in enumerate(options):
+                    if saved_val.split('(')[0].strip() == opt.split('(')[0].strip(): return i
+                return 0
             
             default_combine = False
             if st.session_state.edit_target and target_n > 1:
@@ -566,7 +657,8 @@ with tab1:
             
             c_c1, c_c2 = st.columns(2)
             cat_options = ["선택", "발코니창/일반창", "고정창", "터닝도어", "공틀", "PJ창"]
-            cat = c_c1.selectbox("창호 구분", cat_options, index=cat_options.index(get_val('cat', '선택')))
+            cat_idx = get_fuzzy_index(cat_options, get_val('cat', '선택'))
+            cat = c_c1.selectbox("창호 구분", cat_options, index=cat_idx)
             
             type_options = ["선택"]
             if cat == "발코니창/일반창": type_options += ["HBF-141(발코니단창)", "HBF-251(발코니이중창)", "HBF-115(일반단창)", "HBF-230(일반이중창)", "HBF-225TM(공틀단창)"]
@@ -574,7 +666,9 @@ with tab1:
             elif cat == "터닝도어": type_options += ["터닝도어"]
             elif cat == "공틀": type_options += ["CB90", "CB45"]
             elif cat == "PJ창": type_options += ["PJ창"]
-            win_type = c_c2.selectbox("창호 종류", type_options, index=type_options.index(get_val('type', '선택')) if get_val('type', '선택') in type_options else 0)
+            
+            type_idx = get_fuzzy_index(type_options, get_val('type', '선택'))
+            win_type = c_c2.selectbox("창호 종류", type_options, index=type_idx)
 
             shape_options = ["선택"]
             if cat == "고정창": shape_options += ["FIX", "2F", "3F", "4F"]
@@ -582,14 +676,21 @@ with tab1:
             elif cat == "공틀": shape_options += ["4면공틀", "루버창공틀"]
             elif cat == "PJ창": shape_options += ["바깥열기"]
             elif cat == "발코니창/일반창": shape_options += ["2W", "2W(1:2)", "2WU", "3W(1:2:1)", "3WU", "4W"]
-            win_shape = st.selectbox("창 형태", shape_options, index=shape_options.index(get_val('shape', '선택')) if get_val('shape', '선택') in shape_options else 0)
+            
+            shape_idx = get_fuzzy_index(shape_options, get_val('shape', '선택'))
+            win_shape = st.selectbox("창 형태", shape_options, index=shape_idx)
 
             cv1, cv2 = st.columns(2)
-            vent_dir = cv1.radio("벤트 방향", ["좌", "우"], index=["좌", "우"].index(get_val('vent_dir', '좌')), horizontal=True) if "3W" not in win_shape and cat not in ["고정창", "터닝도어"] and "선택" not in win_shape else "없음"
+            if "3W" not in win_shape and cat not in ["고정창", "터닝도어", "PJ창"] and "선택" not in win_shape:
+                vent_dir = cv1.radio("벤트 방향", ["좌", "우"], index=["좌", "우"].index(get_val('vent_dir', '좌')), horizontal=True)
+            else:
+                vent_dir = "없음"
+                
             screen_opt = cv2.radio("방충망", ["Y", "N"], index=["Y", "N"].index(get_val('screen', 'Y')), horizontal=True) if cat not in ["터닝도어", "고정창"] else "N"
             
             gls_options = ["기본(투명)", "미스트", "모루"]
-            glass_opt = st.selectbox("특수유리 (투명은 미표기)", gls_options, index=gls_options.index(get_val('glass', '기본(투명)')))
+            glass_idx = get_fuzzy_index(gls_options, get_val('glass', '기본(투명)'))
+            glass_opt = st.selectbox("특수유리 (투명은 미표기)", gls_options, index=glass_idx)
 
             cw1, cw2 = st.columns(2)
             width = cw1.number_input("가로 (W)", min_value=0, value=get_val('w', 0), step=10)
@@ -601,28 +702,38 @@ with tab1:
 
             st.markdown("**■ 통바(CB) 상세 설정**")
             cb_options = ["CB100", "CB90", "CB45", "CB135"]
-            cb_left_list, cb_right_list = [], []
             
-            c_l, c_r = st.columns(2)
+            cb_left_list, cb_top_list, cb_right_list = [], [], []
+            c_l, c_t, c_r = st.columns(3)
             with c_l:
                 cbl_data = get_val('cb_left', [])
-                if st.checkbox("◀ 좌측 통바 설정", value=len(cbl_data)>0):
-                    cbl_count = st.number_input("좌측 사양 개수", min_value=1, max_value=10, value=max(1, len(cbl_data)), step=1, key="cbl_cnt")
+                if st.checkbox("◀ 좌측통바", value=len(cbl_data)>0):
+                    cbl_count = st.number_input("좌측 사양 수", min_value=1, max_value=10, value=max(1, len(cbl_data)), step=1, key="cbl_cnt")
                     for i in range(cbl_count):
                         t_val = cbl_data[i]['type'] if i < len(cbl_data) else "CB100"
                         q_val = cbl_data[i]['qty'] if i < len(cbl_data) else 1
                         t = st.selectbox(f"사양{i+1}", cb_options, index=cb_options.index(t_val), key=f"cl_t_{i}")
-                        q = st.number_input(f"전/후수량{i+1}", 1, value=q_val, key=f"cl_q_{i}")
+                        q = st.number_input(f"전후수량{i+1}", 1, value=q_val, key=f"cl_q_{i}")
                         cb_left_list.append({"type": t, "qty": q})
+            with c_t:
+                cbt_data = get_val('cb_top', [])
+                if st.checkbox("▲ 상부통바", value=len(cbt_data)>0):
+                    cbt_count = st.number_input("상부 사양 수", min_value=1, max_value=10, value=max(1, len(cbt_data)), step=1, key="cbt_cnt")
+                    for i in range(cbt_count):
+                        t_val = cbt_data[i]['type'] if i < len(cbt_data) else "CB100"
+                        q_val = cbt_data[i]['qty'] if i < len(cbt_data) else 1
+                        t = st.selectbox(f"사양{i+1}", cb_options, index=cb_options.index(t_val), key=f"ct_t_{i}")
+                        q = st.number_input(f"전후수량{i+1}", 1, value=q_val, key=f"ct_q_{i}")
+                        cb_top_list.append({"type": t, "qty": q})
             with c_r:
                 cbr_data = get_val('cb_right', [])
-                if st.checkbox("우측 통바 설정 ▶", value=len(cbr_data)>0):
-                    cbr_count = st.number_input("우측 사양 개수", min_value=1, max_value=10, value=max(1, len(cbr_data)), step=1, key="cbr_cnt")
+                if st.checkbox("우측통바 ▶", value=len(cbr_data)>0):
+                    cbr_count = st.number_input("우측 사양 수", min_value=1, max_value=10, value=max(1, len(cbr_data)), step=1, key="cbr_cnt")
                     for i in range(cbr_count):
                         t_val = cbr_data[i]['type'] if i < len(cbr_data) else "CB100"
                         q_val = cbr_data[i]['qty'] if i < len(cbr_data) else 1
                         t = st.selectbox(f"사양{i+1}", cb_options, index=cb_options.index(t_val), key=f"cr_t_{i}")
-                        q = st.number_input(f"전/후수량{i+1}", 1, value=q_val, key=f"cr_q_{i}")
+                        q = st.number_input(f"전후수량{i+1}", 1, value=q_val, key=f"cr_q_{i}")
                         cb_right_list.append({"type": t, "qty": q})
 
             btn_label = "✏️ 도면 수정 적용" if st.session_state.edit_target else "✅ 도면 생성 (저장)"
@@ -632,15 +743,27 @@ with tab1:
                 elif width == 0 or height == 0: st.error("🚨 사이즈를 입력해주세요!")
                 elif "U" in win_shape and v_size == 0: st.error("🚨 U창의 V사이즈를 입력해주세요!")
                 else:
-                    gid = get_val('group_id', st.session_state.group_counter)
-                    if combine_prev and target_n > 1: gid = next((w['group_id'] for w in st.session_state.windows_data if w['num'] == target_n - 1), gid)
+                    prev_gid = next((w['group_id'] for w in st.session_state.windows_data if w['num'] == target_n - 1), None)
+                    existing_gid = get_val('group_id', None)
                     
-                    new_data = {"num": target_n, "group_id": gid, "join_dir": join_dir, "loc": loc_name, "cat": cat, "type": win_type, "shape": win_shape, "w": width, "h": height, "v_size": v_size, "h_pos": h_pos, "vent_dir": vent_dir, "screen": screen_opt, "glass": glass_opt, "cb_left": cb_left_list, "cb_right": cb_right_list}
-                    if st.session_state.edit_target: st.session_state.windows_data = [new_data if w['num'] == target_n else w for w in st.session_state.windows_data]; st.session_state.edit_target = None
+                    if combine_prev and target_n > 1:
+                        gid = prev_gid if prev_gid else st.session_state.group_counter
+                    else:
+                        if existing_gid is not None and existing_gid == prev_gid:
+                            gid = st.session_state.group_counter
+                            st.session_state.group_counter += 1
+                        else:
+                            gid = existing_gid if existing_gid is not None else st.session_state.group_counter
+                            if existing_gid is None: st.session_state.group_counter += 1
+                    
+                    new_data = {"num": target_n, "group_id": gid, "join_dir": join_dir, "loc": loc_name, "cat": cat, "type": win_type, "shape": win_shape, "w": width, "h": height, "v_size": v_size, "h_pos": h_pos, "vent_dir": vent_dir, "screen": screen_opt, "glass": glass_opt, "cb_left": cb_left_list, "cb_top": cb_top_list, "cb_right": cb_right_list}
+                    if st.session_state.edit_target: 
+                        st.session_state.windows_data = [new_data if w['num'] == target_n else w for w in st.session_state.windows_data]; st.session_state.edit_target = None
                     else: 
                         st.session_state.windows_data.append(new_data)
-                        if not combine_prev: st.session_state.group_counter += 1
                         st.session_state.current_window_num += 1
+                    
+                    sync_data_and_markers()
                     st.rerun()
 
 # ==========================================
@@ -710,6 +833,47 @@ with tab2:
     notes_html = info.get('notes', '').replace('\n', '<br>')
     svg_blocks = st.session_state.get('rendered_svg', '<div style="color:gray;">설계된 창호가 없습니다.</div>')
 
+    summary_by_type = {}
+    for w in st.session_state.windows_data:
+        for cb in w.get('cb_left', []) + w.get('cb_right', []):
+            ctype = cb['type']
+            clen = w['h']
+            cqty = cb.get('qty', 1)
+            if ctype not in summary_by_type: summary_by_type[ctype] = {}
+            summary_by_type[ctype][clen] = summary_by_type[ctype].get(clen, 0) + cqty
+        for cb in w.get('cb_top', []):
+            ctype = cb['type']
+            clen = w['w']
+            cqty = cb.get('qty', 1)
+            if ctype not in summary_by_type: summary_by_type[ctype] = {}
+            summary_by_type[ctype][clen] = summary_by_type[ctype].get(clen, 0) + cqty
+            
+    summary_html = ""
+    if summary_by_type:
+        summary_html += "<div style='margin-top:20px; border: 2px solid black; padding: 10px; background: white; font-family: \"Malgun Gothic\", sans-serif;'>"
+        summary_html += "<div style='font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid black; padding-bottom: 5px; color:#333;'>통바(CB) 발주 수량 요약</div>"
+        summary_html += "<div style='display: flex; flex-direction: column; gap: 8px; font-size: 15px; font-weight: bold; padding: 5px;'>"
+        
+        for ctype, lengths in sorted(summary_by_type.items()):
+            if "135" in ctype: 
+                t_color = "#ffa500"
+                display_ctype = "CB135(각도바)"
+            elif "45" in ctype: 
+                t_color = "#008000"
+                display_ctype = ctype
+            elif "90" in ctype: 
+                t_color = "#e60012"
+                display_ctype = ctype
+            else: 
+                t_color = "#00205b"
+                display_ctype = ctype
+            
+            parts = [f"{clen}={cqty}ea" for clen, cqty in sorted(lengths.items())]
+            parts_str = " / ".join(parts)
+            summary_html += f"<div style='color:{t_color};'>{display_ctype}_ {parts_str}</div>"
+            
+        summary_html += "</div></div>"
+
     print_html = f"""<div id="print-section" style="padding: 10px; background: white; min-width: 1200px;">
 <h3 style="margin-top: 0; color: #004b9b; border-bottom: 2px solid #004b9b; padding-bottom: 5px;">최종 현장 실측지 (발주 및 인쇄용)</h3>
 <table style="width:100%; border-collapse: collapse; text-align: center; border: 2px solid black; font-family: 'Malgun Gothic', sans-serif; font-size:14px; background: white;">
@@ -751,10 +915,13 @@ with tab2:
 <div style="font-size: 14px; white-space: pre-wrap; margin-top:10px; color:black;">{notes_html}</div>
 </div>
 </div>
-<div style="width: 78%; border: 2px solid black; padding: 10px; background: white; flex-wrap: wrap;">
+<div style="width: 78%; display:flex; flex-direction:column; gap:10px;">
+<div style="border: 2px solid black; padding: 10px; background: white; flex-wrap: wrap;">
 <div id="zoom-container" style="zoom: {zoom_level}%; -moz-transform: scale({zoom_level/100}); -moz-transform-origin: top left; display:flex; flex-wrap:wrap; justify-content:flex-start;">
 {svg_blocks}
 </div>
+</div>
+{summary_html}
 </div>
 </div>
 </div>"""
